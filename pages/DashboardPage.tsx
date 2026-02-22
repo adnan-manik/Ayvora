@@ -1,7 +1,8 @@
 
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { supabase } from '../lib/supabase';
+import { db } from '../lib/firebase';
+import { doc, updateDoc } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
 import { getUserOrders } from '../services/productService';
 import { Order } from '../types';
@@ -37,7 +38,7 @@ export const DashboardPage: React.FC = () => {
   const fetchOrders = async () => {
     if (user) {
       try {
-        const data = await getUserOrders(user.id);
+        const data = await getUserOrders(user.uid);
         setOrders(data);
       } catch (err) {
         console.error(err);
@@ -49,14 +50,11 @@ export const DashboardPage: React.FC = () => {
     e.preventDefault();
     if (!user) return;
     try {
-      const { error } = await supabase
-        .from('profiles')
-        .update(addressForm)
-        .eq('id', user.id);
-      
-      if (error) throw error;
+      const userRef = doc(db, 'users', user.uid);
+      await updateDoc(userRef, addressForm);
       alert('Profile updated successfully');
     } catch (err) {
+      console.error(err);
       alert('Failed to update profile');
     }
   };

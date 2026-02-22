@@ -3,20 +3,6 @@ import { collection, doc, setDoc, getDoc, getDocs, query, where, addDoc, updateD
 import { PERFUMES } from '../constants';
 import { Product, Order, CartItem, Review, Banner, StoreSettings, PromoCode } from '../types';
 
-// --- Local Storage Helpers for Fallback ---
-const getLocalData = <T>(key: string): T | null => {
-  try {
-    const data = localStorage.getItem(key);
-    return data ? JSON.parse(data) : null;
-  } catch { return null; }
-};
-
-const setLocalData = (key: string, data: any) => {
-  try {
-    localStorage.setItem(key, JSON.stringify(data));
-  } catch (e) { console.error(`LS Save Error (${key})`, e); }
-};
-
 const generateTrackingId = () => {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let result = '';
@@ -41,24 +27,23 @@ export const getStoreSettings = async (): Promise<StoreSettings> => {
     const docSnap = await getDoc(docRef);
     if (docSnap.exists()) return { ...defaults, ...docSnap.data() } as StoreSettings;
   } catch (e) {
-    console.warn("Using local settings fallback");
+    // Silent fallback to defaults on permission error
+    console.warn("Using default settings (DB access denied or empty)");
   }
-  return getLocalData<StoreSettings>('ayvora_settings') || defaults;
+  return defaults;
 };
 
 export const updateStoreSettings = async (settings: StoreSettings): Promise<void> => {
-  try { await setDoc(doc(db, "settings", "store_config"), settings); } 
-  catch (e) { setLocalData('ayvora_settings', settings); }
+  await setDoc(doc(db, "settings", "store_config"), settings);
 };
 
 // --- Products ---
 export const getAllProducts = async (): Promise<Product[]> => {
-  let products: Product[] = [];
+  const products: Product[] = [];
   try {
     const querySnapshot = await getDocs(collection(db, "products"));
     querySnapshot.forEach((doc) => {
       const data = doc.data();
-      // Validate/Normalize numeric fields to prevent crashes
       products.push({ 
         id: doc.id, 
         ...data,
@@ -67,59 +52,38 @@ export const getAllProducts = async (): Promise<Product[]> => {
       } as Product);
     });
   } catch (e) {
-    console.error("Error fetching products from DB:", e);
+    console.warn("Error fetching products from DB (using fallback):", e);
   }
 
-  // If DB empty, seed with constants
+  // Fallback to constants if DB is empty or failed
   if (products.length === 0) {
-    products = PERFUMES.map(p => ({ ...p, createdAt: p.createdAt || new Date().toISOString() }));
+    return PERFUMES.map(p => ({ 
+      ...p, 
+      price: Number(p.price) || 0,
+      isNew: true 
+    }));
   }
 
-  const localProducts = getLocalData<Product[]>('ayvora_products_local') || [];
-  const localDeletedIds = getLocalData<string[]>('ayvora_products_deleted') || [];
-  const localUpdatedProducts = getLocalData<Record<string, Product>>('ayvora_products_updated') || {};
-
-  products = [...products, ...localProducts];
-  products = products.map(p => localUpdatedProducts[p.id] ? { ...p, ...localUpdatedProducts[p.id] } : p);
-  products = products.filter(p => !localDeletedIds.includes(p.id));
-
-  const uniqueProducts = Array.from(new Map(products.map(item => [item.id, item])).values());
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
   
-  return uniqueProducts.map(p => ({ 
+  return products.map(p => ({ 
     ...p, 
-    price: Number(p.price) || 0, // Double check safety
+    price: Number(p.price) || 0,
     isNew: new Date(p.createdAt) > thirtyDaysAgo 
   }));
 };
 
 export const addProduct = async (product: Omit<Product, 'id'>): Promise<void> => {
-  try { await addDoc(collection(db, "products"), product); } 
-  catch (e) {
-    const newP = { ...product, id: `local-${Date.now()}` } as Product;
-    const local = getLocalData<Product[]>('ayvora_products_local') || [];
-    local.push(newP);
-    setLocalData('ayvora_products_local', local);
-  }
+  await addDoc(collection(db, "products"), product);
 };
 
 export const updateProduct = async (id: string, updates: Partial<Product>): Promise<void> => {
-  try { await updateDoc(doc(db, "products", id), updates); } 
-  catch (e) {
-    const localUpdates = getLocalData<Record<string, Product>>('ayvora_products_updated') || {};
-    const all = await getAllProducts();
-    const cur = all.find(p => p.id === id);
-    if(cur) { localUpdates[id] = { ...cur, ...updates }; setLocalData('ayvora_products_updated', localUpdates); }
-  }
+  await updateDoc(doc(db, "products", id), updates);
 };
 
 export const deleteProduct = async (id: string): Promise<void> => {
-  try { await deleteDoc(doc(db, "products", id)); } 
-  catch (e) {
-    const del = getLocalData<string[]>('ayvora_products_deleted') || [];
-    if (!del.includes(id)) { del.push(id); setLocalData('ayvora_products_deleted', del); }
-  }
+  await deleteDoc(doc(db, "products", id));
 };
 
 export const getFeaturedProducts = async (): Promise<Product[]> => {
@@ -128,8 +92,17 @@ export const getFeaturedProducts = async (): Promise<Product[]> => {
 };
 
 export const getProductById = async (id: string): Promise<Product | undefined> => {
-  const all = await getAllProducts();
-  return all.find(p => p.id === id);
+  try {
+    const docRef = doc(db, "products", id);
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+      const data = docSnap.data();
+      return { id: docSnap.id, ...data } as Product;
+    }
+  } catch (e) {
+    console.error("Error fetching product by ID:", e);
+  }
+  return undefined;
 };
 
 export const getProductsByCategory = async (category: string): Promise<Product[]> => {
@@ -146,59 +119,42 @@ export const searchProducts = async (queryStr: string): Promise<Product[]> => {
 
 // --- Promo Codes ---
 export const getAllPromoCodes = async (): Promise<PromoCode[]> => {
+  const promos: PromoCode[] = [];
   try {
     const querySnapshot = await getDocs(collection(db, "promo_codes"));
-    const promos: PromoCode[] = [];
     querySnapshot.forEach(doc => promos.push({ id: doc.id, ...doc.data() } as PromoCode));
-    return promos;
   } catch (e) {
-    return getLocalData<PromoCode[]>('ayvora_promos_local') || [];
+    console.error("Error fetching promo codes:", e);
   }
+  return promos;
 };
 
 export const validatePromoCode = async (code: string): Promise<PromoCode | null> => {
   try {
-    // Check Firestore
     const q = query(collection(db, "promo_codes"), where("code", "==", code.toUpperCase()));
     const snapshot = await getDocs(q);
-    let promoData: PromoCode | null = null;
     
-    if (!snapshot.empty) {
-      promoData = { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as PromoCode;
-    } else {
-       // Fallback to local
-      const promos = getLocalData<PromoCode[]>('ayvora_promos_local') || [];
-      const found = promos.find(p => p.code.toUpperCase() === code.toUpperCase());
-      if (found) promoData = found;
-    }
+    if (snapshot.empty) return null;
 
-    if (!promoData) return null;
+    const promoData = { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as PromoCode;
+
     if (promoData.status !== 'active') return null;
     if (promoData.usageLimit === 'single' && promoData.usedCount >= 1) return null;
     if (promoData.usageLimit === 'multi' && promoData.maxUses && promoData.usedCount >= promoData.maxUses) return null;
       
     return promoData;
   } catch (e) {
+    console.error("Error validating promo code:", e);
     return null;
   }
 };
 
 export const createPromoCode = async (promo: Omit<PromoCode, 'id'>): Promise<void> => {
-  try { await addDoc(collection(db, "promo_codes"), promo); } 
-  catch (e) {
-    const local = getLocalData<PromoCode[]>('ayvora_promos_local') || [];
-    local.push({ ...promo, id: `local-promo-${Date.now()}-${Math.random()}` });
-    setLocalData('ayvora_promos_local', local);
-  }
+  await addDoc(collection(db, "promo_codes"), promo);
 };
 
 export const deletePromoCode = async (id: string): Promise<void> => {
-  try { await deleteDoc(doc(db, "promo_codes", id)); } 
-  catch (e) {
-    let local = getLocalData<PromoCode[]>('ayvora_promos_local') || [];
-    local = local.filter(p => p.id !== id);
-    setLocalData('ayvora_promos_local', local);
-  }
+  await deleteDoc(doc(db, "promo_codes", id));
 };
 
 const incrementPromoUsage = async (code: string) => {
@@ -210,45 +166,32 @@ const incrementPromoUsage = async (code: string) => {
       await updateDoc(docRef, { usedCount: increment(1) });
     }
   } catch (e) {
-    // Local fallback update
-    const local = getLocalData<PromoCode[]>('ayvora_promos_local') || [];
-    const idx = local.findIndex(p => p.code === code);
-    if (idx > -1) {
-      local[idx].usedCount += 1;
-      setLocalData('ayvora_promos_local', local);
-    }
+    console.error("Error incrementing promo usage:", e);
   }
 };
 
-// --- Banners, Orders, Reviews --- (existing implementation remains stable)
+// --- Banners ---
 export const getBanners = async (): Promise<Banner[]> => {
+  const banners: Banner[] = [];
   try {
     const q = query(collection(db, "banners"), orderBy("order"));
     const querySnapshot = await getDocs(q);
-    const banners: Banner[] = [];
     querySnapshot.forEach(doc => banners.push({ id: doc.id, ...doc.data() } as Banner));
-    return banners;
-  } catch (e) { return getLocalData<Banner[]>('ayvora_banners_local') || []; }
+  } catch (e) {
+    console.error("Error fetching banners:", e);
+  }
+  return banners;
 };
 
 export const addBanner = async (banner: Omit<Banner, 'id'>): Promise<void> => {
-  try { await addDoc(collection(db, "banners"), banner); } 
-  catch (e) {
-    const local = getLocalData<Banner[]>('ayvora_banners_local') || [];
-    local.push({ ...banner, id: `local-banner-${Date.now()}` });
-    setLocalData('ayvora_banners_local', local);
-  }
+  await addDoc(collection(db, "banners"), banner);
 };
 
 export const deleteBanner = async (id: string): Promise<void> => {
-  try { await deleteDoc(doc(db, "banners", id)); } 
-  catch (e) {
-    let local = getLocalData<Banner[]>('ayvora_banners_local') || [];
-    local = local.filter(b => b.id !== id);
-    setLocalData('ayvora_banners_local', local);
-  }
+  await deleteDoc(doc(db, "banners", id));
 };
 
+// --- Orders ---
 export const createOrder = async (
   items: CartItem[], 
   total: number, 
@@ -257,25 +200,24 @@ export const createOrder = async (
   const trackingId = generateTrackingId();
   const newOrder: Order = { id: trackingId, createdAt: new Date().toISOString(), status: 'Pending', total, items, ...orderDetails };
   
-  try {
-    await setDoc(doc(db, "orders", trackingId), newOrder);
-    // If a promo code was used, increment its usage count
-    if (orderDetails.promoCode) {
-      await incrementPromoUsage(orderDetails.promoCode);
+  // Sanitize undefined values
+  Object.keys(newOrder).forEach(key => {
+    if ((newOrder as any)[key] === undefined) {
+      delete (newOrder as any)[key];
     }
-  } catch (error) {
-    const orders = getLocalData<Record<string, Order>>('ayvora_orders_local') || {};
-    orders[trackingId] = newOrder;
-    setLocalData('ayvora_orders_local', orders);
-    if (orderDetails.promoCode) {
-       await incrementPromoUsage(orderDetails.promoCode);
-    }
+  });
+
+  await setDoc(doc(db, "orders", trackingId), newOrder);
+  
+  if (orderDetails.promoCode) {
+    await incrementPromoUsage(orderDetails.promoCode);
   }
+  
   return trackingId;
 };
 
 export const getAllOrders = async (): Promise<Order[]> => {
-  let orders: Order[] = [];
+  const orders: Order[] = [];
   try {
     const q = query(collection(db, "orders"), orderBy("createdAt", "desc"));
     const querySnapshot = await getDocs(q);
@@ -284,27 +226,37 @@ export const getAllOrders = async (): Promise<Order[]> => {
       orders.push({ 
         id: doc.id, 
         ...data,
-        // Ensure items have activePrice
         items: (data.items || []).map((i: any) => ({ ...i, activePrice: Number(i.activePrice) || Number(i.price) || 0 })) 
       } as Order);
     });
-  } catch (e) {}
-  const localOrdersMap = getLocalData<Record<string, Order>>('ayvora_orders_local') || {};
-  const combined = [...orders, ...Object.values(localOrdersMap)].sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  return Array.from(new Map(combined.map(o => [o.id, o])).values());
+  } catch (e) {
+    console.error("Error fetching orders:", e);
+  }
+  return orders;
 };
 
 export const getUserOrders = async (userId: string): Promise<Order[]> => {
-  const allOrders = await getAllOrders();
-  return allOrders.filter(o => o.userId === userId);
+  const orders: Order[] = [];
+  try {
+    const q = query(collection(db, "orders"), where("userId", "==", userId));
+    const querySnapshot = await getDocs(q);
+    querySnapshot.forEach(doc => {
+      const data = doc.data();
+      orders.push({ 
+        id: doc.id, 
+        ...data,
+        items: (data.items || []).map((i: any) => ({ ...i, activePrice: Number(i.activePrice) || Number(i.price) || 0 })) 
+      } as Order);
+    });
+    return orders.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  } catch (e) {
+    console.error("Error fetching user orders:", e);
+    return [];
+  }
 };
 
 export const updateOrderStatus = async (orderId: string, status: Order['status']): Promise<void> => {
-  try { await updateDoc(doc(db, "orders", orderId), { status }); } 
-  catch (e) {
-    const orders = getLocalData<Record<string, Order>>('ayvora_orders_local') || {};
-    if (orders[orderId]) { orders[orderId].status = status; setLocalData('ayvora_orders_local', orders); }
-  }
+  await updateDoc(doc(db, "orders", orderId), { status });
 };
 
 export const trackOrder = async (trackingId: string): Promise<Order | null> => {
@@ -312,28 +264,26 @@ export const trackOrder = async (trackingId: string): Promise<Order | null> => {
     const docRef = doc(db, "orders", trackingId);
     const docSnap = await getDoc(docRef);
     if (docSnap.exists()) return docSnap.data() as Order;
-  } catch (error) {}
-  const orders = getLocalData<Record<string, Order>>('ayvora_orders_local') || {};
-  return orders[trackingId] || null;
+  } catch (error) {
+    console.error("Error tracking order:", error);
+  }
+  return null;
 };
 
+// --- Reviews ---
 export const addReview = async (productId: string, userName: string, rating: number, comment: string): Promise<void> => {
   const review: Omit<Review, 'id'> = { product_id: productId, user_id: 'guest', user_name: userName, rating, comment, created_at: new Date().toISOString() };
-  try { await addDoc(collection(db, "reviews"), review); } 
-  catch (e) {
-    const reviews = getLocalData<Review[]>('ayvora_reviews_local') || [];
-    reviews.push({ ...review, id: `local-${Date.now()}` } as Review);
-    setLocalData('ayvora_reviews_local', reviews);
-  }
+  await addDoc(collection(db, "reviews"), review);
 };
 
 export const getProductReviews = async (productId: string): Promise<Review[]> => {
-  let reviews: Review[] = [];
+  const reviews: Review[] = [];
   try {
     const q = query(collection(db, "reviews"), where("product_id", "==", productId));
     const querySnapshot = await getDocs(q);
     querySnapshot.forEach(doc => reviews.push({ id: doc.id, ...doc.data() } as Review));
-  } catch (e) {}
-  const localReviews = getLocalData<Review[]>('ayvora_reviews_local') || [];
-  return [...reviews, ...localReviews.filter(r => r.product_id === productId)];
+  } catch (e) {
+    console.error("Error fetching reviews:", e);
+  }
+  return reviews;
 };

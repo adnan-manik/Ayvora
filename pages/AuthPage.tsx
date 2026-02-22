@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
-import { supabase } from '../lib/supabase';
+import { auth, db } from '../lib/firebase';
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import { doc, setDoc } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
 
 export const AuthPage: React.FC = () => {
@@ -18,28 +20,22 @@ export const AuthPage: React.FC = () => {
 
     try {
       if (isLogin) {
-        const { error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
-        if (error) throw error;
+        await signInWithEmailAndPassword(auth, email, password);
         navigate('/dashboard');
       } else {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: { full_name: fullName }
-          }
-        });
-        if (error) throw error;
-        // Create profile entry
-        if (data.user) {
-          await supabase.from('profiles').insert([
-            { id: data.user.id, email: email, full_name: fullName }
-          ]);
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
+        
+        // Create profile entry in Firestore
+        if (user) {
+          await setDoc(doc(db, 'users', user.uid), {
+            id: user.uid,
+            email: email,
+            full_name: fullName,
+            createdAt: new Date().toISOString()
+          });
         }
-        alert('Signup successful! Please check your email.');
+        alert('Signup successful!');
         setIsLogin(true);
       }
     } catch (err: any) {

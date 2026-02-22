@@ -1,8 +1,8 @@
+// We don't have crypto-js installed. Use Web Crypto API.
 
-
-const API_KEY = import.meta.env.VITE_CLOUDINARY_API_KEY;
-const API_SECRET = import.meta.env.VITE_COUDINARY_API_SECRET;
-const CLOUD_NAME =  import.meta.env.VITE_COUDINARY_CLOUD_NAME; 
+const API_KEY = process.env.VITE_CLOUDINARY_API_KEY;
+const API_SECRET = process.env.VITE_CLOUDINARY_API_SECRET;
+const CLOUD_NAME = process.env.VITE_CLOUDINARY_CLOUD_NAME;
 
 async function generateSignature(params: Record<string, string | number>, secret: string): Promise<string> {
   const sortedKeys = Object.keys(params).sort();
@@ -25,6 +25,10 @@ export const uploadToCloudinary = async (file: File): Promise<string> => {
   const timestamp = Math.round(new Date().getTime() / 1000);
   const params = {
     timestamp: timestamp,
+    // upload_preset: 'ml_default', // Optional for signed uploads if using API Key/Secret directly? 
+    // Actually, signed uploads don't need a preset if you sign correctly, but usually you need one or use default.
+    // Let's try without preset first, or use 'unsigned' if that fails.
+    // Wait, signed uploads use the API Key and Secret to authenticate, so no preset needed usually unless for transformation.
   };
 
   const signature = await generateSignature(params, API_SECRET);
