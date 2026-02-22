@@ -1,8 +1,8 @@
 
 
-const API_KEY = process.env.CLOUDINARY_API_KEY;
-const API_SECRET = process.env.COUDINARY_API_SECRET;
-const CLOUD_NAME =  process.env.COUDINARY_CLOUD_NAME; 
+const API_KEY = import.meta.env.VITE_CLOUDINARY_API_KEY;
+const API_SECRET = import.meta.env.VITE_COUDINARY_API_SECRET;
+const CLOUD_NAME =  import.meta.env.VITE_COUDINARY_CLOUD_NAME; 
 
 async function generateSignature(params: Record<string, string | number>, secret: string): Promise<string> {
   const sortedKeys = Object.keys(params).sort();
