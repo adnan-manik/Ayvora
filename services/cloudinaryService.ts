@@ -1,8 +1,8 @@
 // We don't have crypto-js installed. Use Web Crypto API.
 
-const API_KEY = process.env.VITE_CLOUDINARY_API_KEY;
-const API_SECRET = process.env.VITE_CLOUDINARY_API_SECRET;
-const CLOUD_NAME = process.env.VITE_CLOUDINARY_CLOUD_NAME;
+const API_KEY = import.meta.env.VITE_CLOUDINARY_API_KEY;
+const API_SECRET = import.meta.env.VITE_CLOUDINARY_API_SECRET;
+const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME;
 
 async function generateSignature(params: Record<string, string | number>, secret: string): Promise<string> {
   const sortedKeys = Object.keys(params).sort();
